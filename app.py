@@ -1,29 +1,59 @@
 import streamlit as st
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup, Comment
+from bs4 import BeautifulSoup
 import time
 from urllib.parse import urljoin
 import io
 
-# 画面の設定
-st.set_page_config(page_title="マキテックHP alt抽出ツール v4")
+# 画面を広く使う設定
+st.set_page_config(page_title="マキテックHP alt抽出ツール v6", layout="wide")
 
-# タイトル
-st.title("マキテックHP　製品ページalt抽出ツール v4")
+st.title("マキテックHP　製品ページalt抽出ツール v6")
 
-# URL入力欄
-st.subheader("URL入力欄")
-target_url = st.text_input("URLを記入してください", placeholder="https://www.makitech.co.jp/conveyor/index-2.html")
+# --- サイドバー：除外リストの管理 ---
+with st.sidebar:
+    st.header("🛠 除外URLリスト管理")
+    st.write("削除したいURLやキーワードを1行ずつ入力してください。")
+    
+    # 削除したいURLを大量に入れられるテキストエリア
+    # heightを指定して枠を大きくしています
+    exclude_text = st.text_area(
+        "除外リスト（メモ帳）", 
+        value=st.session_state.get('exclude_list_raw', ""),
+        height=400,
+        placeholder="https://www.makitech.co.jp/index.html\n/support/\n/company/",
+        help="ここに登録された文字を含む行は、抽出結果から自動的に削除されます。"
+    )
+    # セッションに保存して保持
+    st.session_state['exclude_list_raw'] = exclude_text
+    exclude_list = [line.strip() for line in exclude_text.split("\n") if line.strip()]
+    
+    st.info(f"現在 {len(exclude_list)} 件の除外ルールが適用されています。")
 
-# 注記
-st.caption("※記入したURLから2層目のページのaltを抽出するため、各カテゴリのメニューページを記入してください。")
+    # リストをクリアするボタン
+    if st.button("リストをすべてクリア"):
+        st.session_state['exclude_list_raw'] = ""
+        st.rerun()
 
-if st.button("抽出する"):
+# --- メインエリア：抽出設定 ---
+col1, col2 = st.columns([2, 1])
+with col1:
+    target_url = st.text_input("調査元のメニューページURL", placeholder="https://www.makitech.co.jp/conveyor/index-2.html")
+with col2:
+    st.write("") # スペース調整
+    extract_btn = st.button("Step 1: データを抽出する", use_container_width=True)
+
+# セッション状態の初期化
+if 'extracted_df' not in st.session_state:
+    st.session_state.extracted_df = None
+
+# --- 抽出処理 ---
+if extract_btn:
     if not target_url:
         st.error("URLを入力してください")
     else:
-        with st.spinner("共通パーツを徹底的にフィルタリング中（v4）..."):
+        with st.spinner("全ページを詳細に調査中..."):
             try:
                 headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
                 res = requests.get(target_url, headers=headers)
@@ -38,67 +68,58 @@ if st.button("抽出する"):
                             links.append(url)
 
                 if not links:
-                    st.warning("対象となる2層目のページが見つかりませんでした。")
+                    st.warning("対象ページが見つかりませんでした。")
                 else:
                     all_data = []
                     progress_bar = st.progress(0)
-                    
-                    # --- 除外したいワードのリスト（ここに追加してください） ---
-                    NOISE_WORDS = [
-                        "TOP", "サイトマップ", "お問合せ", "お問い合わせ", "採用情報", "会社情報", 
-                        "製品情報", "お客様サポート", "CAD", "カタログ", "ロゴ", "インフォメーション",
-                        "製品データ一覧", "カタログ一覧", "CADデータダウンロードご希望の方",
-                        "新卒採用情報", "キャリア採用情報", "搬送システム製品", "マキテック",
-                        "コンベヤ製品のパイオニア", "株式会社マキテック", "HOME", "用語集", "目的別Q&A", "カタログ請求", "製品データ一覧", ""
-                    ]
-
                     for i, link in enumerate(links):
-                        time.sleep(0.5)
+                        time.sleep(0.3)
                         try:
                             r = requests.get(link, headers=headers, timeout=10)
                             r.encoding = r.apparent_encoding
                             ps = BeautifulSoup(r.text, 'html.parser')
                             
-                            # メタ情報取得
                             t_div = ps.find('div', class_='m-t-20 text-medium')
                             model = t_div.get_text(strip=True) if t_div else "未設定"
-                            title = ps.title.string if ps.title else ""
-                            meta_k = ps.find("meta", attrs={"name": "keywords"})
-                            kwd = meta_k["content"] if meta_k else ""
-                            meta_d = ps.find("meta", attrs={"name": "description"})
-                            desc = meta_d["content"] if meta_d else ""
-
-                            # 抽出エリアの限定
-                            main_area = ps.find(id='contents') or ps.find(class_='l-main') or ps.find('main') or ps
                             
-                            alt_list = []
-                            if main_area:
-                                for img in main_area.find_all('img'):
-                                    alt_text = img.get('alt', '').strip()
-                                    
-                                    # 除外判定
-                                    # 1. 空ではない
-                                    # 2. NOISE_WORDSに含まれる単語がaltの中に「一つも含まれていない」場合のみ採用
-                                    if alt_text:
-                                        is_noise = any(word in alt_text for word in NOISE_WORDS)
-                                        if not is_noise:
-                                            alt_list.append(alt_text)
+                            main = ps.find(id='contents') or ps.find(class_='l-main') or ps
+                            alts = [img.get('alt', '').strip() for img in main.find_all('img') if img.get('alt')]
                             
-                            row = {"型番": model, "URL": link, "Title": title, "Keywords": kwd, "Description": desc}
-                            for idx, val in enumerate(alt_list):
+                            row = {"型番": model, "URL": link, "Title": ps.title.string if ps.title else ""}
+                            for idx, val in enumerate(alts):
                                 row[f"alt {idx+1}"] = val
                             all_data.append(row)
-                        except:
-                            continue
+                        except: continue
                         progress_bar.progress((i + 1) / len(links))
-
-                    if all_data:
-                        df = pd.DataFrame(all_data)
-                        st.success("v4 抽出完了！")
-                        st.dataframe(df)
-                        output = io.BytesIO()
-                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                            df.to_excel(writer, index=False)
-                        st.download_button(label="エクセルデータをダウンロード", data=output.getvalue(), file_name="makitech_alt_list_v4.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                    
+                    st.session_state.extracted_df = pd.DataFrame(all_data)
             except Exception as e:
-                st.error(f"エラーが発生しました: {e}")
+                st.error(f"エラー: {e}")
+
+# --- 結果の表示とフィルタリング ---
+if st.session_state.extracted_df is not None:
+    df_display = st.session_state.extracted_df.copy()
+    
+    # 除外リストに基づいて行を削除
+    if exclude_list:
+        for ex in exclude_list:
+            df_display = df_display[~df_display['URL'].str.contains(ex, na=False)]
+    
+    st.divider()
+    st.subheader(f"抽出・フィルタ結果 （現在 {len(df_display)} 行）")
+    st.dataframe(df_display, use_container_width=True)
+
+    # ダウンロードボタン
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_display.to_excel(writer, index=False)
+    
+    st.download_button(
+        label="Step 2: フィルタ済みのエクセルをダウンロード",
+        data=output.getvalue(),
+        file_name="makitech_alt_list_final.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
+    st.caption("※左側の除外リストを書き換えると、即座に上の表に反映されます。")
