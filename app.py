@@ -12,9 +12,8 @@ st.set_page_config(page_title="マキテックHP 抽出ツール v7", layout="wi
 st.title("マキテックHP　製品ページalt抽出ツール v7")
 
 # ==========================================
-# 【メンテナンス用】ここに除外したいURLをどんどん追加してください
+# 【メンテナンス用】除外URLリスト
 # ==========================================
-# カンマ( , )とクォーテーション( " )を忘れないように入力してください
 EXCLUDE_URL_LIST = [
     "https://www.makitech.co.jp/index.html",
     "https://www.makitech.co.jp/product.html",
@@ -59,10 +58,7 @@ EXCLUDE_URL_LIST = [
     "https://www.makitech.co.jp/support/faq01.html", 
     "https://www.makitech.co.jp/support/yougo.html", 
     "https://www.makitech.co.jp/solution/",  
-    
-    # ここに好きなだけ追加できます
 ]
-# ==========================================
 
 # サイドバー設定
 with st.sidebar:
@@ -87,15 +83,13 @@ if st.button("抽出を開始する"):
                 links = []
                 for a in soup.find_all('a', href=True):
                     url = urljoin(target_url, a['href'])
-                    # 基本フィルタ（htmlであること、自分自身でないこと）
                     if (".html" in url) and (url != target_url) and ("#" not in url):
-                        # ★ここで「除外リスト」に入っているURLは最初から飛ばす
                         if url not in EXCLUDE_URL_LIST:
                             if url not in links:
                                 links.append(url)
 
                 if not links:
-                    st.warning("対象ページが見つかりませんでした（すべて除外された可能性もあります）。")
+                    st.warning("対象ページが見つかりませんでした。")
                 else:
                     all_data = []
                     progress_bar = st.progress(0)
@@ -106,17 +100,41 @@ if st.button("抽出を開始する"):
                             r.encoding = r.apparent_encoding
                             ps = BeautifulSoup(r.text, 'html.parser')
                             
+                            # 型番の取得
                             t_div = ps.find('div', class_='m-t-20 text-medium')
                             model = t_div.get_text(strip=True) if t_div else "未設定"
                             
+                            # タイトル
+                            page_title = ps.title.string if ps.title else ""
+
+                            # Keywords の取得 (D列用)
+                            kw_tag = ps.find("meta", attrs={'name': 'keywords'})
+                            keywords = kw_tag["content"] if kw_tag and kw_tag.has_attr("content") else ""
+
+                            # Description の取得 (E列用)
+                            desc_tag = ps.find("meta", attrs={'name': 'description'})
+                            description = desc_tag["content"] if desc_tag and desc_tag.has_attr("content") else ""
+                            
+                            # 画像altの取得 (F列以降用)
                             main = ps.find(id='contents') or ps.find(class_='l-main') or ps
                             alts = [img.get('alt', '').strip() for img in main.find_all('img') if img.get('alt')]
                             
-                            row = {"型番": model, "URL": link, "Title": ps.title.string if ps.title else ""}
+                            # データの格納（定義順がExcelの列順になります）
+                            row = {
+                                "型番": model,          # A列
+                                "URL": link,           # B列
+                                "Title": page_title,   # C列
+                                "Keywords": keywords,  # D列
+                                "Description": description # E列
+                            }
+                            
+                            # F列以降にalt属性を動的に追加
                             for idx, val in enumerate(alts):
                                 row[f"alt {idx+1}"] = val
+                                
                             all_data.append(row)
-                        except: continue
+                        except:
+                            continue
                         progress_bar.progress((i + 1) / len(links))
                     
                     st.session_state.extracted_df = pd.DataFrame(all_data)
@@ -134,7 +152,7 @@ if st.session_state.extracted_df is not None:
     st.download_button(
         label="エクセルをダウンロード",
         data=output.getvalue(),
-        file_name="alt_list.xlsx",
+        file_name="alt_list_updated.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
