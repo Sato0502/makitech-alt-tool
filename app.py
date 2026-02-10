@@ -9,11 +9,11 @@ import io
 # ==========================================
 # 画面設定
 # ==========================================
-st.set_page_config(page_title="マキテックHP 抽出ツール v9", layout="wide")
-st.title("マキテックHP 製品ページalt抽出ツール v9")
+st.set_page_config(page_title="マキテックHP 抽出ツール v10", layout="wide")
+st.title("マキテックHP 製品ページalt抽出ツール v10")
 
 # ==========================================
-# 除外URLリスト（Set型）
+# 除外URLリスト（Set型で定義）
 # ==========================================
 EXCLUDE_URL_LIST = {
     "https://www.makitech.co.jp/index.html",
@@ -61,7 +61,9 @@ EXCLUDE_URL_LIST = {
     "https://www.makitech.co.jp/solution/",  
 }
 
-# サイドバー
+# ==========================================
+# UIサイドバー
+# ==========================================
 with st.sidebar:
     st.header("設定")
     target_url = st.text_input("1. 調査元URL", placeholder="https://www.makitech.co.jp/conveyor/index-2.html")
@@ -71,7 +73,7 @@ if 'extracted_df' not in st.session_state:
     st.session_state.extracted_df = None
 
 # ==========================================
-# メイン処理
+# メイン実行ロジック
 # ==========================================
 if st.button("抽出を開始する", type="primary"):
     if not target_url:
@@ -85,7 +87,7 @@ if st.button("抽出を開始する", type="primary"):
                 res.encoding = res.apparent_encoding
                 soup = BeautifulSoup(res.text, 'html.parser')
 
-                # 巡回リンクの収集
+                # ページ内リンクの収集
                 links = []
                 for a in soup.find_all('a', href=True):
                     full_url = urljoin(target_url, a['href'])
@@ -94,7 +96,7 @@ if st.button("抽出を開始する", type="primary"):
                             links.append(full_url)
 
                 if not links:
-                    st.warning("対象ページが見つかりませんでした。")
+                    st.warning("対象となる製品ページへのリンクが見つかりませんでした。")
                 else:
                     all_data = []
                     progress_bar = st.progress(0)
@@ -104,7 +106,7 @@ if st.button("抽出を開始する", type="primary"):
                         status_text.text(f"解析中 ({i+1}/{len(links)}): {link}")
                         time.sleep(0.3)
                         
-                        # ページごとのデータ初期化（最悪URLだけでも残すため）
+                        # 1行分のデータ初期値（解析失敗時もURLだけは残す）
                         row = {
                             "型番": "未取得",
                             "URL": link,
@@ -118,12 +120,12 @@ if st.button("抽出を開始する", type="primary"):
                             r.encoding = r.apparent_encoding
                             ps = BeautifulSoup(r.text, 'html.parser')
                             
-                            # A: 型番の取得 (安全な取得方法)
+                            # A: 型番の取得 (安全な取得)
                             t_div = ps.find('div', class_='m-t-20 text-medium')
                             if t_div:
                                 row["型番"] = t_div.get_text(strip=True)
                             
-                            # C: タイトルの取得
+                            # C: タイトルの取得 (Noneチェック)
                             if ps.title and ps.title.string:
                                 row["Title"] = ps.title.string.strip()
 
@@ -137,21 +139,25 @@ if st.button("抽出を開始する", type="primary"):
                             if desc_tag and desc_tag.get("content"):
                                 row["Description"] = desc_tag["content"].strip()
                             
-                            # F以降: alt属性の抽出
-                            alts = []
-                            for img in ps.find_all('img'):
+                            # F以降: alt属性の抽出（重複を許容するよう改良）
+                            img_tags = ps.find_all('img')
+                            current_page_alts = []
+                            for img in img_tags:
                                 alt_val = img.get('alt')
+                                # alt属性が存在する場合（空文字含む）
                                 if alt_val is not None:
                                     alt_clean = alt_val.strip()
-                                    if alt_clean and alt_clean not in alts:
-                                        alts.append(alt_clean)
+                                    # 「意味のあるalt」だけを抽出したい場合は if alt_clean: を有効に
+                                    # 全ての画像をカウントしたい場合は if alt_val is not None: だけでOK
+                                    if alt_clean:
+                                        current_page_alts.append(alt_clean)
                             
-                            for idx, val in enumerate(alts, start=1):
+                            # 抽出したaltを順番にrowに追加
+                            for idx, val in enumerate(current_page_alts, start=1):
                                 row[f"alt {idx}"] = val
                                 
                         except Exception as e:
-                            # 接続エラーなどが起きても、ここまでの row (URL入り) を保存
-                            st.write(f"⚠️ 解析制限あり: {link} (詳細: {e})")
+                            st.write(f"⚠️ ページ一部読み込みエラー: {link} ({e})")
                         
                         all_data.append(row)
                         progress_bar.progress((i + 1) / len(links))
@@ -159,22 +165,25 @@ if st.button("抽出を開始する", type="primary"):
                     # DataFrame作成
                     df = pd.DataFrame(all_data)
                     
-                    # 列順の正規化
+                    # カラム順の固定（型番〜Descriptionを左側に）
                     fixed_cols = ["型番", "URL", "Title", "Keywords", "Description"]
-                    # 実際に存在する列だけを抽出（念のため）
                     existing_fixed = [c for c in fixed_cols if c in df.columns]
-                    dynamic_cols = [c for c in df.columns if c not in fixed_cols]
+                    dynamic_cols = sorted([c for c in df.columns if c.startswith("alt ")], 
+                                          key=lambda x: int(x.split(" ")[1]))
+                    
                     df = df[existing_fixed + dynamic_cols]
                     
                     st.session_state.extracted_df = df
-                    status_text.text(f"完了しました。合計 {len(all_data)} 件のページをリストアップしました。")
+                    status_text.text(f"抽出完了：合計 {len(all_data)} ページ")
 
             except Exception as e:
                 st.error(f"初期エラー: {e}")
 
-# 結果表示とダウンロード
+# ==========================================
+# 結果表示・ダウンロード
+# ==========================================
 if st.session_state.extracted_df is not None:
-    st.subheader("抽出結果")
+    st.subheader("抽出結果プレビュー")
     st.dataframe(st.session_state.extracted_df, use_container_width=True)
 
     output = io.BytesIO()
@@ -184,7 +193,7 @@ if st.session_state.extracted_df is not None:
     st.download_button(
         label="エクセルをダウンロード",
         data=output.getvalue(),
-        file_name="makitech_alt_full_list.xlsx",
+        file_name=f"makitech_alt_report_{time.strftime('%Y%m%d')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
