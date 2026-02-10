@@ -9,11 +9,11 @@ import io
 # ==========================================
 # 画面設定
 # ==========================================
-st.set_page_config(page_title="マキテックHP 抽出ツール v8", layout="wide")
-st.title("マキテックHP 製品ページalt抽出ツール v8")
+st.set_page_config(page_title="マキテックHP 抽出ツール v9", layout="wide")
+st.title("マキテックHP 製品ページalt抽出ツール v9")
 
 # ==========================================
-# 【メンテナンス用】除外URLリスト（Set型で高速化）
+# 除外URLリスト（Set型）
 # ==========================================
 EXCLUDE_URL_LIST = {
     "https://www.makitech.co.jp/index.html",
@@ -61,9 +61,7 @@ EXCLUDE_URL_LIST = {
     "https://www.makitech.co.jp/solution/",  
 }
 
-# ==========================================
 # サイドバー
-# ==========================================
 with st.sidebar:
     st.header("設定")
     target_url = st.text_input("1. 調査元URL", placeholder="https://www.makitech.co.jp/conveyor/index-2.html")
@@ -73,23 +71,21 @@ if 'extracted_df' not in st.session_state:
     st.session_state.extracted_df = None
 
 # ==========================================
-# メインロジック
+# メイン処理
 # ==========================================
 if st.button("抽出を開始する", type="primary"):
     if not target_url:
         st.error("URLを入力してください")
     else:
-        with st.spinner("ページを巡回中..."):
+        with st.spinner("解析を開始します..."):
             try:
                 headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
-                
-                # セッションの作成（効率化）
                 session = requests.Session()
                 res = session.get(target_url, headers=headers, timeout=15)
                 res.encoding = res.apparent_encoding
                 soup = BeautifulSoup(res.text, 'html.parser')
 
-                # リンクの収集
+                # 巡回リンクの収集
                 links = []
                 for a in soup.find_all('a', href=True):
                     full_url = urljoin(target_url, a['href'])
@@ -106,88 +102,89 @@ if st.button("抽出を開始する", type="primary"):
                     
                     for i, link in enumerate(links):
                         status_text.text(f"解析中 ({i+1}/{len(links)}): {link}")
-                        time.sleep(0.3) # サーバー負荷軽減
+                        time.sleep(0.3)
+                        
+                        # ページごとのデータ初期化（最悪URLだけでも残すため）
+                        row = {
+                            "型番": "未取得",
+                            "URL": link,
+                            "Title": "",
+                            "Keywords": "",
+                            "Description": ""
+                        }
                         
                         try:
                             r = session.get(link, headers=headers, timeout=10)
                             r.encoding = r.apparent_encoding
                             ps = BeautifulSoup(r.text, 'html.parser')
                             
-                            # A: 型番の取得
+                            # A: 型番の取得 (安全な取得方法)
                             t_div = ps.find('div', class_='m-t-20 text-medium')
-                            model = t_div.get_text(strip=True) if t_div else "未設定"
+                            if t_div:
+                                row["型番"] = t_div.get_text(strip=True)
                             
-                            # C: タイトル
-                            page_title = ps.title.string.strip() if ps.title else ""
+                            # C: タイトルの取得
+                            if ps.title and ps.title.string:
+                                row["Title"] = ps.title.string.strip()
 
                             # D: Keywords
                             kw_tag = ps.find("meta", attrs={'name': 'keywords'})
-                            keywords = kw_tag["content"] if kw_tag and kw_tag.has_attr("content") else ""
+                            if kw_tag and kw_tag.get("content"):
+                                row["Keywords"] = kw_tag["content"].strip()
 
                             # E: Description
                             desc_tag = ps.find("meta", attrs={'name': 'description'})
-                            description = desc_tag["content"] if desc_tag and desc_tag.has_attr("content") else ""
+                            if desc_tag and desc_tag.get("content"):
+                                row["Description"] = desc_tag["content"].strip()
                             
-                            # F以降: 全てのimgからaltを抽出（強化ポイント）
-                            # ページ内の全画像を対象とし、意味のあるaltのみ抽出
+                            # F以降: alt属性の抽出
                             alts = []
                             for img in ps.find_all('img'):
                                 alt_val = img.get('alt')
-                                if alt_val and alt_val.strip():
+                                if alt_val is not None:
                                     alt_clean = alt_val.strip()
-                                    if alt_clean not in alts: # 重複を除去したい場合
+                                    if alt_clean and alt_clean not in alts:
                                         alts.append(alt_clean)
                             
-                            # データの格納
-                            row = {
-                                "型番": model,          # A
-                                "URL": link,            # B
-                                "Title": page_title,    # C
-                                "Keywords": keywords,   # D
-                                "Description": description # E
-                            }
-                            
-                            # F列以降にalt属性を動的に追加
                             for idx, val in enumerate(alts, start=1):
                                 row[f"alt {idx}"] = val
                                 
-                            all_data.append(row)
                         except Exception as e:
-                            st.write(f"⚠️ スキップ: {link} (エラー: {e})")
-                            continue
+                            # 接続エラーなどが起きても、ここまでの row (URL入り) を保存
+                            st.write(f"⚠️ 解析制限あり: {link} (詳細: {e})")
                         
+                        all_data.append(row)
                         progress_bar.progress((i + 1) / len(links))
                     
                     # DataFrame作成
                     df = pd.DataFrame(all_data)
                     
-                    # 列の並び順を整理（A-Eを左端に固定）
+                    # 列順の正規化
                     fixed_cols = ["型番", "URL", "Title", "Keywords", "Description"]
+                    # 実際に存在する列だけを抽出（念のため）
+                    existing_fixed = [c for c in fixed_cols if c in df.columns]
                     dynamic_cols = [c for c in df.columns if c not in fixed_cols]
-                    df = df[fixed_cols + dynamic_cols]
+                    df = df[existing_fixed + dynamic_cols]
                     
                     st.session_state.extracted_df = df
-                    status_text.text("抽出が完了しました。")
+                    status_text.text(f"完了しました。合計 {len(all_data)} 件のページをリストアップしました。")
 
             except Exception as e:
-                st.error(f"エラー: {e}")
+                st.error(f"初期エラー: {e}")
 
-# ==========================================
 # 結果表示とダウンロード
-# ==========================================
 if st.session_state.extracted_df is not None:
     st.subheader("抽出結果")
     st.dataframe(st.session_state.extracted_df, use_container_width=True)
 
     output = io.BytesIO()
-    # ExcelWriterで書き出し
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         st.session_state.extracted_df.to_excel(writer, index=False)
     
     st.download_button(
         label="エクセルをダウンロード",
         data=output.getvalue(),
-        file_name="makitech_alt_list.xlsx",
+        file_name="makitech_alt_full_list.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
